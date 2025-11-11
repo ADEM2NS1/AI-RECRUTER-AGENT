@@ -4,35 +4,43 @@ import re
 from typing import Any, Dict, List, Optional
 
 try:
-    from .agentGraph import run_agent, run_agent_email
+    from .agentGraph import run_agent, run_agent_email, run_agent_schedule
 except ImportError:
-    from agentGraph import run_agent, run_agent_email
+    from agentGraph import run_agent, run_agent_email, run_agent_schedule
 
-# --- replaced LangChain wrappers with direct Ollama client ---
+# --- Using Together AI instead of Ollama ---
 try:
-    from ollama import Client
+    from together import Together
 except ImportError:
-    Client = None
+    Together = None
 
 
 class RecruiterAgent:
     def __init__(self, model: str | None = None, temperature: float = 0.2):
-        self.model = model or os.getenv("OLLAMA_MODEL", "phi3")
-        self.temperature = temperature  # retained for future tuning (ollama ignores for now)
+        self.model = model or os.getenv("TOGETHER_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
+        self.temperature = temperature
         self.client = self._init_client()
         self.chat_top_k = int(os.getenv("CHAT_TOP_K", "3"))  # reduce LLM calls for chat
         self.default_top_k = int(os.getenv("DEFAULT_TOP_K", str(self.chat_top_k)))
 
     def _init_client(self):
-        if Client is None:
-            raise RuntimeError("Install the 'ollama' package: pip install ollama")
-        host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        return Client(host=host)
+        if Together is None:
+            raise RuntimeError("Install the 'together' package: pip install together")
+        api_key = os.getenv("TOGETHER_API_KEY")
+        if not api_key:
+            raise RuntimeError("TOGETHER_API_KEY environment variable not set")
+        return Together(api_key=api_key)
 
     def _ask(self, prompt: str) -> str:
         try:
-            resp = self.client.generate(model=self.model, prompt=prompt)
-            return ((resp or {}).get("response", "") or "").strip().strip('"').strip("'")
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+                max_tokens=512
+            )
+            content = response.choices[0].message.content
+            return (content or "").strip().strip('"').strip("'")
         except Exception as e:
             return f"LLM error: {e}"
 
@@ -58,7 +66,17 @@ class RecruiterAgent:
         if any(t in msg_l for t in search_triggers) and (any(r in msg_l for r in role_terms) or " with " in msg_l or " and " in msg_l):
             return "search_candidates"
 
-        # --- new: email intent ---
+        # --- new: scheduling intent (calendar + email) ---
+        schedule_triggers = [
+            "schedule interviews", "schedule interview", "schedule them", "schedule for them",
+            "book meetings", "book meeting", "book interviews", "book interview",
+            "calendar these", "set up meetings", "set appointments", "schedule appointments",
+            "schedule with top candidates", "schedule for selected candidates",
+        ]
+        if any(phrase in msg_l for phrase in schedule_triggers):
+            return "schedule_interviews"
+
+        # --- email intent ---
         email_triggers = [
             "send emails", "send email", "email the candidates", "email candidates",
             "invite", "send invites", "schedule interviews", "interview emails",
@@ -175,7 +193,11 @@ Label:
                     results = run_agent(msg)
             return self._format_candidates(results)
 
-        # --- new: reuse last saved state and only send emails ---
+        # --- new: calendar + email flow ---
+        if intent == "schedule_interviews":
+            return run_agent_schedule()
+
+        # --- reuse last saved state and only send emails ---
         if intent == "email_candidates":
             return run_agent_email()
 

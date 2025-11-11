@@ -1,10 +1,12 @@
+import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import Counter
-from ollama import Client
+from together import Together
 
-# Initialize Ollama once
-ollama_client = Client()
+# Initialize Together AI client once
+together_client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
+TOGETHER_MODEL = os.environ.get("TOGETHER_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
 
 # -----------------------------
 # CV Analyzer Node
@@ -75,18 +77,18 @@ def rank_candidates(cv_embeddings: list, job_embedding: np.ndarray, candidate_id
     return sorted(scores, key=lambda x: x[1], reverse=True)
 
 # -----------------------------
-# Explainer Node (Phi3-based)
+# Explainer Node (Together AI-based)
 # -----------------------------
 def explain_rankingLLM(cv_info: dict, job_desc_clean: str) -> str:
     """
-    Uses Ollama (phi3) to explain why candidate fits the job.
+    Uses Together AI (Llama 3.1) to explain why candidate fits the job.
     """
     full_text = (cv_info or {}).get("full_text", "") or ""
     job_text = job_desc_clean or ""
     if not full_text or not job_text:
         return "Insufficient data to generate explanation."
-    prompt = f"""
-You are an HR assistant. Explain why this candidate is suitable for the job.
+    
+    prompt = f"""You are an HR assistant. Explain why this candidate is suitable for the job.
 
 Candidate Resume Text:
 {full_text}
@@ -94,10 +96,15 @@ Candidate Resume Text:
 Job Description:
 {job_text}
 
-Highlight concrete skills, relevant experience, and alignment with job requirements. Be concise.
-"""
+Highlight concrete skills, relevant experience, and alignment with job requirements. Be concise."""
+    
     try:
-        resp = ollama_client.generate(model="phi3", prompt=prompt)
-        return (resp or {}).get("response", "").strip()
+        response = together_client.chat.completions.create(
+            model=TOGETHER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=512
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
         return f"LLM error: {e}"
